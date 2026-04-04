@@ -827,6 +827,108 @@
 
 
 
+// const express       = require("express");
+// const path          = require("path");
+// const fs            = require("fs");
+// const cors          = require("cors");
+// require("dotenv").config();
+
+// const connectDB          = require("./config/db");
+// const errorHandler       = require("./middleware/errorHandler");
+// const logger             = require("./middleware/logger");
+
+// const analysisRoutes     = require("./routes/analysisRoutes");
+// const githubRoutes       = require("./routes/githubRoutes");
+// const linkedinRoutes     = require("./routes/linkedinRoutes");
+// const linkedinSaveRoutes = require("./routes/linkedinSaveRoutes");
+// const rankingRoutes      = require("./routes/rankingRoutes");
+// const statsRoutes        = require("./routes/statsRoutes");
+
+// // Connect to MongoDB
+// connectDB();
+
+// const app = express();
+
+// // ✅ Vercel Fix: Read-only error se bachne ke liye ye change kiya
+// // Local par uploads folder banayega, Vercel par /tmp use karega
+// const uploadDir = process.env.NODE_ENV === 'production' ? '/tmp' : './uploads';
+// if (!fs.existsSync(uploadDir)) {
+//     try {
+//         fs.mkdirSync(uploadDir);
+//     } catch (err) {
+//         console.log("Directory creation skipped or handled by Vercel");
+//     }
+// }
+
+// // Core Middleware
+// // ✅ CORS update: Sab allow kar diya taaki deployment mein error na aaye
+// app.use(cors()); 
+// app.use(express.json({ limit: "10mb" }));
+// app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+// app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+// app.use(logger);
+
+// // Routes
+// app.use("/api/analysis",         analysisRoutes);
+// app.use("/api/github-analyze",   githubRoutes);
+// app.use("/api/linkedin-analyze", linkedinRoutes);
+// app.use("/api/linkedin",         linkedinSaveRoutes);
+// app.use("/api/rankings",         rankingRoutes);
+// app.use("/api/stats",            statsRoutes);
+
+// // Health check
+// const mongoose = require("mongoose");
+// app.get("/", (req, res) => {
+//   res.json({
+//     message:     "✅ ResumeAI Server running!",
+//     mongoStatus: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+//     githubAuth:  !!process.env.GITHUB_TOKEN,
+//   });
+// });
+
+// // Global error handler
+// app.use(errorHandler);
+
+// // Start Server
+// const PORT = process.env.PORT || 5000;
+
+// // Local development ke liye listen chalega
+// if (process.env.NODE_ENV !== 'production') {
+//     app.listen(PORT, () => {
+//         console.log(`🚀 Server running on port ${PORT}`);
+//     });
+// }
+
+// // ✅ SABSE IMPORTANT: Vercel ko ye export chahiye
+// module.exports = app;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const express       = require("express");
 const path          = require("path");
 const fs            = require("fs");
@@ -850,7 +952,6 @@ connectDB();
 const app = express();
 
 // ✅ Vercel Fix: Read-only error se bachne ke liye ye change kiya
-// Local par uploads folder banayega, Vercel par /tmp use karega
 const uploadDir = process.env.NODE_ENV === 'production' ? '/tmp' : './uploads';
 if (!fs.existsSync(uploadDir)) {
     try {
@@ -861,7 +962,6 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // Core Middleware
-// ✅ CORS update: Sab allow kar diya taaki deployment mein error na aaye
 app.use(cors()); 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
@@ -878,7 +978,12 @@ app.use("/api/stats",            statsRoutes);
 
 // Health check
 const mongoose = require("mongoose");
-app.get("/", (req, res) => {
+// ✅ Fix: async add kiya taaki status check karne se pehle connection finish hone ka wait kare
+app.get("/", async (req, res) => {
+  if (mongoose.connection.readyState !== 1) {
+    await connectDB();
+  }
+  
   res.json({
     message:     "✅ ResumeAI Server running!",
     mongoStatus: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
@@ -892,7 +997,6 @@ app.use(errorHandler);
 // Start Server
 const PORT = process.env.PORT || 5000;
 
-// Local development ke liye listen chalega
 if (process.env.NODE_ENV !== 'production') {
     app.listen(PORT, () => {
         console.log(`🚀 Server running on port ${PORT}`);

@@ -69,7 +69,7 @@
 //       formData.append("overallScore", data.overallScore);
 //       formData.append("candidateName", data.candidateName || "");
 //       formData.append("analysisData", JSON.stringify(data));
-//       await fetch("http://localhost:5000/api/analysis/save", { method: "POST", body: formData });
+//       await fetch("https://ai-smart-resume-analyzer-so1y.vercel.app/api/analysis/save", { method: "POST", body: formData });
 //       console.log("✅ Analysis saved to history");
 //     } catch (err) {
 //       console.warn("Could not save to history:", err.message);
@@ -385,7 +385,7 @@
 //       formData.append("overallScore", data.overallScore);
 //       formData.append("candidateName", data.candidateName || "");
 //       formData.append("analysisData", JSON.stringify(data));
-//       await fetch("http://localhost:5000/api/analysis/save", { method: "POST", body: formData });
+//       await fetch("https://ai-smart-resume-analyzer-so1y.vercel.app/api/analysis/save", { method: "POST", body: formData });
 //       console.log("✅ Analysis saved to history");
 //     } catch (err) {
 //       console.warn("Could not save to history:", err.message);
@@ -765,7 +765,7 @@ export default function Dashboard() {
       // ── LinkedIn — saved if available ────────────────────
       formData.append("linkedinMetrics", JSON.stringify(data.linkedinMetrics || {}));
 
-      await fetch("http://localhost:5000/api/analysis/save", {
+      await fetch("https://ai-smart-resume-analyzer-so1y.vercel.app/api/analysis/save", {
         method: "POST",
         body: formData,
       });

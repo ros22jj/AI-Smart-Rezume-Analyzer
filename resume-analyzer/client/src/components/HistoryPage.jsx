@@ -341,11 +341,11 @@ export default function HistoryPage({ onBack }) {
 
       console.log("Fetching history from server...");
 
-      const analysesRes = await fetch("http://localhost:5000/api/analysis/all");
+      const analysesRes = await fetch("https://ai-smart-resume-analyzer-so1y.vercel.app/api/analysis/all");
       const analysesData = await analysesRes.json();
       console.log("History data received:", analysesData);
 
-      const statsRes = await fetch("http://localhost:5000/api/stats");
+      const statsRes = await fetch("https://ai-smart-resume-analyzer-so1y.vercel.app/api/stats");
       const statsData = await statsRes.json();
       console.log("Stats data received:", statsData);
 

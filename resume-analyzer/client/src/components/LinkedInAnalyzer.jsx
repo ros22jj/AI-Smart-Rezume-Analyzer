@@ -650,7 +650,7 @@
 //         return;
 //       }
 
-//       const response = await fetch("http://localhost:5000/api/linkedin-analyze", {
+//       const response = await fetch("https://ai-smart-resume-analyzer-so1y.vercel.app/api/linkedin-analyze", {
 //         method: "POST",
 //         headers: { "Content-Type": "application/json" },
 //         body: JSON.stringify({
@@ -1519,7 +1519,7 @@ export default function LinkedInAnalyzer({ onBack, resumeScore, resumeSkills = [
       }
 
       // ── Step 1: Analyze LinkedIn ───────────────────────────
-      const response = await fetch("http://localhost:5000/api/linkedin-analyze", {
+      const response = await fetch("https://ai-smart-resume-analyzer-so1y.vercel.app/api/linkedin-analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1537,7 +1537,7 @@ export default function LinkedInAnalyzer({ onBack, resumeScore, resumeSkills = [
 
       // ── Step 2: Save to MongoDB ────────────────────────────
       try {
-        await fetch("http://localhost:5000/api/linkedin/save", {
+        await fetch("https://ai-smart-resume-analyzer-so1y.vercel.app/api/linkedin/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

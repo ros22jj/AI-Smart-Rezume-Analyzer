@@ -11,7 +11,7 @@
 // // CONSTANTS
 // // ══════════════════════════════════════════════════════════════
 // const MAX_RESUMES = 5;
-// const API_BASE = "http://localhost:5000/api";
+// const API_BASE = "https://ai-smart-resume-analyzer-so1y.vercel.app/api";
 
 // const RANK_COLORS = [
 //   { bg: "#FFD700", glow: "#FFD70088", label: "GOLD",   icon: "🥇", text: "#1a1200" },
@@ -1370,7 +1370,7 @@
 // // CONSTANTS
 // // ══════════════════════════════════════════════════════════════
 // const MAX_RESUMES = 5;
-// const API_BASE    = "http://localhost:5000/api";
+// const API_BASE    = "https://ai-smart-resume-analyzer-so1y.vercel.app/api";
 
 // const RANK_COLORS = [
 //   { bg: "#FFD700", glow: "#FFD70088", label: "GOLD",   icon: "🥇", text: "#1a1200" },
@@ -3016,7 +3016,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 const MAX_RESUMES = 5;
-const API_BASE    = "http://localhost:5000/api";
+const API_BASE    = "https://ai-smart-resume-analyzer-so1y.vercel.app/api";
 
 const RANK_COLORS = [
   { bg: "#FFD700", glow: "#FFD70088", label: "GOLD",   icon: "🥇", text: "#1a1200" },

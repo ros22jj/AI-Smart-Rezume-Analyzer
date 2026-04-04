@@ -504,7 +504,7 @@ ${shortJD}`;
           console.log("🔍 Extracted projects:", resumeProjects);
           console.log("🔍 Claimed years:", claimedYears);
 
-          const ghResponse = await fetch("http://localhost:5000/api/github-analyze", {
+          const ghResponse = await fetch("https://ai-smart-resume-analyzer-so1y.vercel.app/api/github-analyze", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

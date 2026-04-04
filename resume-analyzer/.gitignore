@@ -1,0 +1,19 @@
+# node_modules/
+# .env
+# client/.env
+# server/.env
+# dist/
+# .DS_Store
+
+
+
+
+
+
+
+node_modules/
+.env
+client/.env
+server/.env
+resume-analyzer/client/.env
+resume-analyzer/server/.env

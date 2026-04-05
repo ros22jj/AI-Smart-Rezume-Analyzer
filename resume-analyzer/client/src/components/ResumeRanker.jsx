@@ -3016,7 +3016,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 const MAX_RESUMES = 5;
-const API_BASE    = "https://ai-smart-resume-analyzer-so1y.vercel.app/api";
+const API_BASE    = (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/api";
 
 const RANK_COLORS = [
   { bg: "#FFD700", glow: "#FFD70088", label: "GOLD",   icon: "🥇", text: "#1a1200" },
@@ -3783,6 +3783,11 @@ export default function ResumeRanker({ onBack }) {
         setProgress(Math.round((i / activeFiles.length) * 60));
         const data = await analyzeResume({ file: activeFiles[i].file, jdText: jd, linkedinText: activeFiles[i].linkedin, apiKey });
         analyzed.push(data);
+        // ── Rate-limit guard: pause between Groq calls ──────
+        if (i < activeFiles.length - 1) {
+          setCurrentStep(`Analyzed resume ${i + 1}/${activeFiles.length} — waiting before next...`);
+          await new Promise(r => setTimeout(r, 900));
+        }
       }
 
       setProgress(65);
@@ -3799,6 +3804,10 @@ export default function ResumeRanker({ onBack }) {
         setCurrentStep(`Creating improvement plan for #${rank}: ${candidate.atsResult?.candidateName || candidate.fileName}`);
         setProgress(75 + Math.round((i / needsImprovement.length) * 15));
         improvements[candidate.fileName] = await generateImprovements({ candidate, rank, jdText: jd, apiKey });
+        // ── Rate-limit guard: pause between improvement calls ──
+        if (i < needsImprovement.length - 1) {
+          await new Promise(r => setTimeout(r, 700));
+        }
       }
 
       setProgress(92);

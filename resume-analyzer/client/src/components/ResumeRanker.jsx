@@ -4045,3 +4045,6 @@ export default function ResumeRanker({ onBack }) {
     </div>
   );
 }
+
+
+

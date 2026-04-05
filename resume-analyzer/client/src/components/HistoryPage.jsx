@@ -21,19 +21,23 @@ export default function HistoryPage({ onBack }) {
     setLoading(true);
     setError(null);
     try {
-      // ── FIXED: use API_BASE env variable ──────────────────
-      const [analysesRes, statsRes] = await Promise.all([
-        fetch(`${API_BASE}/api/analysis/user/${user.id}`),
-        fetch(`${API_BASE}/api/stats`),
-      ]);
-
+      // ── Analyses fetch — main call, must succeed ───────────
+      const analysesRes = await fetch(`${API_BASE}/api/analysis/user/${user.id}`);
       if (!analysesRes.ok) throw new Error(`Server error: ${analysesRes.status}`);
-
       const analysesData = await analysesRes.json();
-      const statsData    = statsRes.ok ? await statsRes.json() : null;
-
       setAnalyses(analysesData.analyses || []);
-      if (statsData?.success) setStats(statsData);
+
+      // ── Stats fetch — optional, dont crash if it fails ────
+      try {
+        const statsRes = await fetch(`${API_BASE}/api/stats`);
+        if (statsRes.ok) {
+          const statsData = await statsRes.json();
+          if (statsData?.success) setStats(statsData);
+        }
+      } catch (statsErr) {
+        console.warn("Stats fetch failed (non-critical):", statsErr.message);
+      }
+
     } catch (err) {
       console.error("Error fetching history:", err);
       setError(err.message);

@@ -3082,15 +3082,50 @@ function extractProjects(text) {
 }
 
 function extractGithub(text) {
-  const patterns = [
-    /github\.com\/([a-zA-Z0-9_\-]{2,39})(?:\/|$|\s|"|')/g,
-    /github:\s*@?([a-zA-Z0-9_\-]{2,39})/gi,
-  ];
-  const skip = ["features","topics","explore","marketplace","enterprise","sponsors","about","login","signup","orgs"];
-  for (const pattern of patterns) {
-    const m = pattern.exec(text);
-    if (m && !skip.includes(m[1].toLowerCase())) return m[1];
+  // Skip list — GitHub own page/nav usernames
+  const skip = new Set([
+    "features","topics","explore","marketplace","enterprise","sponsors",
+    "about","login","signup","orgs","settings","notifications","pulls",
+    "issues","actions","wiki","security","pulse","graphs","network",
+    "trending","collections","events","site","contact","pricing","apps",
+    "jobs","education","github",
+  ]);
+
+  // Clean text — PDF extractors sometimes insert spaces inside URLs
+  const cleaned = text
+    .replace(/github\s*\.\s*com\s*\/\s*/gi, "github.com/")
+    .replace(/https?\s*:\/\/\s*/gi, "https://");
+
+  let m;
+
+  // Pattern 1: full https URL  e.g. https://github.com/username
+  const p1 = /https?:\/\/(?:www\.)?github\.com\/([a-zA-Z0-9][a-zA-Z0-9_\-]{0,38})/gi;
+  while ((m = p1.exec(cleaned)) !== null) {
+    const u = m[1].trim().replace(/[^a-zA-Z0-9_\-]/g, "");
+    if (u.length >= 2 && !skip.has(u.toLowerCase())) return u;
   }
+
+  // Pattern 2: bare github.com/username (no https)
+  const p2 = /github\.com\/([a-zA-Z0-9][a-zA-Z0-9_\-]{0,38})/gi;
+  while ((m = p2.exec(cleaned)) !== null) {
+    const u = m[1].trim().replace(/[^a-zA-Z0-9_\-]/g, "");
+    if (u.length >= 2 && !skip.has(u.toLowerCase())) return u;
+  }
+
+  // Pattern 3: "github: @username" or "github | username" or "github / username"
+  const p3 = /github\s*[:|/]\s*@?([a-zA-Z0-9][a-zA-Z0-9_\-]{1,38})/gi;
+  while ((m = p3.exec(cleaned)) !== null) {
+    const u = m[1].trim().replace(/[^a-zA-Z0-9_\-]/g, "");
+    if (u.length >= 2 && !skip.has(u.toLowerCase())) return u;
+  }
+
+  // Pattern 4: "GitHub username" label (common in PDF resumes)
+  const p4 = /github[^\n:/<]{0,10}:\s*@?([a-zA-Z0-9][a-zA-Z0-9_\-]{1,38})/gi;
+  while ((m = p4.exec(cleaned)) !== null) {
+    const u = m[1].trim().replace(/[^a-zA-Z0-9_\-]/g, "");
+    if (u.length >= 2 && !skip.has(u.toLowerCase())) return u;
+  }
+
   return "";
 }
 
@@ -3160,7 +3195,45 @@ function fmt(bytes) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// FIXED: analyzeResume — proper Groq response extraction
+// GROQ FETCH WITH RETRY + RATE-LIMIT BACKOFF
+// Retries on HTTP 429 with exponential wait. Throws on other errors.
+// ══════════════════════════════════════════════════════════════
+async function groqFetchWithRetry(body, apiKey, retries = 4) {
+  const url = "https://api.groq.com/openai/v1/chat/completions";
+  const headers = {
+    "Content-Type":  "application/json",
+    "Authorization": `Bearer ${apiKey}`,
+  };
+  for (let attempt = 0; attempt < retries; attempt++) {
+    let res;
+    try {
+      res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+    } catch (netErr) {
+      throw new Error(`Network error: ${netErr.message}`);
+    }
+    if (res.ok) return res;
+    if (res.status === 429) {
+      // Respect Retry-After header if present, else exponential backoff
+      const retryAfter = res.headers?.get?.("retry-after");
+      const waitMs = retryAfter
+        ? parseInt(retryAfter) * 1000
+        : (attempt + 1) * 10000; // 10s, 20s, 30s, 40s
+      console.warn(`⏳ Groq 429 rate-limit — waiting ${waitMs / 1000}s (attempt ${attempt + 1}/${retries})`);
+      await new Promise(r => setTimeout(r, waitMs));
+      continue;
+    }
+    // Non-429 error
+    let errMsg = `Groq API error (${res.status})`;
+    try { const b = await res.json(); errMsg = b?.error?.message || errMsg; } catch {}
+    throw new Error(errMsg);
+  }
+  throw new Error("Groq rate limit exceeded after retries. Please wait 1 minute and try again.");
+}
+
+// ══════════════════════════════════════════════════════════════
+// analyzeResume — token-optimized prompt, retry logic, githubNote
+// Token budget per call: ~1,100 in + 900 out = ~2,000 tokens
+// (was ~2,300 in + 2,000 out = ~4,300 tokens)
 // ══════════════════════════════════════════════════════════════
 async function analyzeResume({ file, jdText, linkedinText, apiKey }) {
   const resumeText     = await extractTextFromFile(file);
@@ -3169,92 +3242,62 @@ async function analyzeResume({ file, jdText, linkedinText, apiKey }) {
   const claimedYears   = extractYears(resumeText);
   const githubUsername = extractGithub(resumeText);
 
-  const prompt = `You are an expert ATS resume analyzer. Analyze the resume against the job description.
-Return ONLY a valid JSON object. No markdown, no text outside JSON.
+  // ── Compact prompt — 800 resume chars + 400 JD chars ─────
+  // (was 1500 + 800 = 2300 chars of context)
+  const prompt = `ATS resume analyzer. Output ONLY valid JSON, no markdown, no backticks.
+Schema:
+{"candidateName":"string","overallScore":0,"scores":{"keywordMatch":{"score":0,"matched":[],"missing":[]},"skillsMatch":{"score":0,"matched":[],"missing":[]},"experienceRelevance":{"score":0},"educationMatch":{"score":0,"degree":""},"projectRelevance":{"score":0},"formattingScore":{"score":0,"atsIssues":[]},"actionVerbScore":{"score":0},"achievementScore":{"score":0},"grammarReadability":{"score":0},"atsCompatibility":{"score":0},"sectionCompleteness":{"score":0,"present":[],"missing":[]}},"topStrengths":[],"criticalImprovements":[],"jdSpecificImprovements":[],"verdict":""}
+RESUME:${resumeText.slice(0, 800)}
+JD:${jdText.slice(0, 400)}`;
 
-{
-  "candidateName": "full name from resume or 'Candidate'",
-  "overallScore": 75,
-  "scores": {
-    "keywordMatch":         { "score": 70, "details": "explanation", "keywords": ["React","Node.js"], "matched": ["React"], "missing": ["Docker"] },
-    "skillsMatch":          { "score": 80, "details": "explanation", "matched": ["React"], "missing": ["Docker"] },
-    "experienceRelevance":  { "score": 60, "details": "explanation" },
-    "educationMatch":       { "score": 90, "details": "explanation", "degree": "B.Tech CSE" },
-    "projectRelevance":     { "score": 70, "details": "explanation" },
-    "formattingScore":      { "score": 75, "details": "explanation", "atsIssues": ["issue"] },
-    "actionVerbScore":      { "score": 80, "details": "explanation", "goodVerbs": ["Built"], "weakPhrases": ["Worked on"] },
-    "achievementScore":     { "score": 65, "details": "explanation", "examples": ["example"] },
-    "grammarReadability":   { "score": 85, "details": "explanation" },
-    "atsCompatibility":     { "score": 70, "details": "explanation" },
-    "sectionCompleteness":  { "score": 75, "details": "explanation", "present": ["Skills"], "missing": ["Certifications"] }
-  },
-  "topStrengths": ["strength1", "strength2", "strength3"],
-  "criticalImprovements": ["improvement1", "improvement2", "improvement3"],
-  "jdSpecificImprovements": ["specific improvement 1", "specific improvement 2", "specific improvement 3"],
-  "verdict": "Overall assessment in 2 sentences."
-}
+  // ── Groq call with retry ──────────────────────────────────
+  const groqRes = await groqFetchWithRetry({
+    model:       "llama-3.1-8b-instant",
+    messages: [
+      { role: "system", content: "You are an ATS resume analyzer. Respond with valid JSON only. No markdown. No backticks. No explanation." },
+      { role: "user",   content: prompt },
+    ],
+    temperature: 0.1,
+    max_tokens:  900,  // was 2000 — scores only need ~600 tokens
+  }, apiKey);
 
-RESUME:
-${resumeText.slice(0, 1500)}
-
-JOB DESCRIPTION:
-${jdText.slice(0, 800)}`;
-
-  // ── FIXED: Groq call with full error info ─────────────────
-  let groqResponse;
-  try {
-    groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model:       "llama-3.1-8b-instant",
-        messages: [
-          { role: "system", content: "You are an ATS resume analyzer. Always respond with valid JSON only. No markdown, no backticks." },
-          { role: "user",   content: prompt },
-        ],
-        temperature: 0.1,
-        max_tokens:  2000,
-      }),
-    });
-  } catch (netErr) {
-    throw new Error(`Network error: ${netErr.message}`);
-  }
-
-  // ── FIXED: Detailed error message from Groq ───────────────
-  if (!groqResponse.ok) {
-    let errMsg = `Groq API error (${groqResponse.status})`;
-    try {
-      const errBody = await groqResponse.json();
-      errMsg = errBody?.error?.message || errMsg;
-    } catch {}
-    throw new Error(errMsg);
-  }
-
-  // ── FIXED: Proper response extraction ────────────────────
-  const groqData = await groqResponse.json();
-
+  const groqData = await groqRes.json();
   if (!groqData?.choices?.[0]?.message?.content) {
     throw new Error("Empty or invalid response from Groq API");
   }
-
   const result = parseJSON(groqData.choices[0].message.content);
 
-  // ── GitHub metrics ────────────────────────────────────────
+  // ── GitHub metrics — validate URL, set note if invalid ───
   let githubMetrics = null;
+  // "not_found" = URL in resume but invalid user
+  // "no_url"    = no GitHub URL detected in resume
+  let githubNote = githubUsername ? null : "no_url";
+
   if (githubUsername) {
     try {
       const ghRes  = await fetch(`${API_BASE}/github-analyze`, {
-        method: "POST",
+        method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ githubUsername, resumeText: resumeText.slice(0, 1500), resumeSkills: skills, resumeProjects: projects, claimedYears }),
+        body: JSON.stringify({
+          githubUsername,
+          resumeText:    resumeText.slice(0, 800),
+          resumeSkills:  skills,
+          resumeProjects: projects,
+          claimedYears,
+        }),
       });
       const ghData = await ghRes.json();
-      if (ghData.success) githubMetrics = ghData.githubMetrics;
+      if (ghData.success) {
+        githubMetrics = ghData.githubMetrics;
+        githubNote    = null; // valid
+      } else {
+        // API responded but user not found / error
+        console.warn(`⚠️ GitHub: ${ghData.error || "user not found"} for @${githubUsername}`);
+        githubNote = "not_found";
+      }
     } catch (ghErr) {
       console.warn("⚠️ GitHub metrics failed:", ghErr.message);
+      githubNote = "not_found";
     }
   }
 
@@ -3263,7 +3306,7 @@ ${jdText.slice(0, 800)}`;
   if (linkedinText && linkedinText.trim().length > 50) {
     try {
       const liRes  = await fetch(`${API_BASE}/linkedin-analyze`, {
-        method: "POST",
+        method:  "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ linkedinText, jobRole: jdText.slice(0, 100), resumeSkills: skills }),
       });
@@ -3274,80 +3317,256 @@ ${jdText.slice(0, 800)}`;
     }
   }
 
-  return { fileName: file.name, resumeText, githubUsername, atsResult: result, githubMetrics, linkedinMetrics, skills };
+  return { fileName: file.name, resumeText, githubUsername, githubNote, atsResult: result, githubMetrics, linkedinMetrics, skills };
 }
 
 // ══════════════════════════════════════════════════════════════
-// COMPUTE COMPOSITE SCORE
+// COMPUTE COMPOSITE SCORE — STRICT 50% ATS + 30% GitHub + 20% LinkedIn
+// Missing metrics score 0 for their weight (not re-weighted).
+// This ensures GitHub and LinkedIn always matter for ranking.
 // ══════════════════════════════════════════════════════════════
 function computeCompositeScore(data) {
   const atsScore = data.atsResult?.overallScore               ?? 0;
+  const ghScore  = data.githubMetrics?.trustScore             ?? 0;   // 0 if missing
+  const liScore  = data.linkedinMetrics?.overallLinkedInScore ?? 0;   // 0 if missing
+
+  // Strict fixed weights — always out of 100
+  // If GitHub not provided: that 30% counts as 0 → penalises candidates who dont add GitHub
+  // If LinkedIn not provided: that 20% counts as 0 → incentivises adding LinkedIn
+  return Math.round(atsScore * 0.5 + ghScore * 0.3 + liScore * 0.2);
+}
+
+// Human-readable breakdown for UI display
+function getScoreBreakdown(data) {
+  const atsScore = data.atsResult?.overallScore               ?? 0;
   const ghScore  = data.githubMetrics?.trustScore             ?? null;
   const liScore  = data.linkedinMetrics?.overallLinkedInScore ?? null;
-  let total = atsScore * 0.5, denominator = 0.5;
-  if (ghScore !== null) { total += ghScore * 0.3; denominator += 0.3; }
-  if (liScore !== null) { total += liScore * 0.2; denominator += 0.2; }
-  return Math.round(total / denominator);
+  return {
+    ats:       { score: atsScore, weight: 50,  contribution: Math.round(atsScore * 0.5) },
+    github:    { score: ghScore,  weight: 30,  contribution: ghScore !== null ? Math.round(ghScore * 0.3) : 0, missing: ghScore === null },
+    linkedin:  { score: liScore,  weight: 20,  contribution: liScore !== null ? Math.round(liScore * 0.2) : 0, missing: liScore === null },
+    composite: Math.round((atsScore * 0.5) + ((ghScore ?? 0) * 0.3) + ((liScore ?? 0) * 0.2)),
+  };
 }
 
 // ══════════════════════════════════════════════════════════════
-// FIXED: generateImprovements — proper extraction
+// generateImprovements — uses data already returned by ATS call.
+// ZERO extra Groq API calls. Saves ~800-1200 tokens per candidate.
 // ══════════════════════════════════════════════════════════════
-async function generateImprovements({ candidate, rank, jdText, apiKey }) {
-  const prompt = `You are a senior career coach. A candidate ranked #${rank} in a resume competition for this job.
+function generateImprovements({ candidate }) {
+  const ats  = candidate.atsResult;
+  const tips = [];
 
-Candidate: ${candidate.atsResult?.candidateName || candidate.fileName}
-ATS Score: ${candidate.atsResult?.overallScore}/100
-GitHub Trust Score: ${candidate.githubMetrics?.trustScore ?? "N/A"}/100
-LinkedIn Score: ${candidate.linkedinMetrics?.overallLinkedInScore ?? "N/A"}/100
-Skills on resume: ${candidate.skills.slice(0, 15).join(", ")}
-Missing from JD: ${candidate.atsResult?.scores?.skillsMatch?.missing?.slice(0, 5).join(", ") || "Unknown"}
-Weak areas: ${Object.entries(candidate.atsResult?.scores || {}).filter(([, v]) => v.score < 65).map(([k, v]) => `${k}(${v.score})`).join(", ")}
-
-Job Description: ${jdText.slice(0, 400)}
-
-Return ONLY a valid JSON array of exactly 6 actionable improvement tips. Each tip must be specific, not generic.
-Format: ["tip1", "tip2", "tip3", "tip4", "tip5", "tip6"]`;
-
-  try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages: [
-          { role: "system", content: "Return only a JSON array of strings. No markdown. No backticks." },
-          { role: "user",   content: prompt },
-        ],
-        temperature: 0.3,
-        max_tokens:  800,
-      }),
-    });
-
-    if (!res.ok) throw new Error(`Groq error ${res.status}`);
-
-    const data = await res.json();
-    if (!data?.choices?.[0]?.message?.content) throw new Error("Empty improvements response");
-
-    const raw   = data.choices[0].message.content;
-    const clean = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
-    const s = clean.indexOf("["), e = clean.lastIndexOf("]");
-    if (s === -1 || e === -1) throw new Error("No array in response");
-    return JSON.parse(clean.slice(s, e + 1));
-
-  } catch (err) {
-    console.warn("⚠️ Improvements failed:", err.message);
-    return candidate.atsResult?.jdSpecificImprovements || candidate.atsResult?.criticalImprovements || ["Review and improve resume"];
+  // 1. JD-specific improvements from ATS result (most valuable)
+  if (ats?.jdSpecificImprovements?.length) {
+    tips.push(...ats.jdSpecificImprovements);
   }
+
+  // 2. Critical improvements
+  if (ats?.criticalImprovements?.length) {
+    tips.push(...ats.criticalImprovements);
+  }
+
+  // 3. Add missing skills tip if available
+  const missingSkills = ats?.scores?.skillsMatch?.missing?.slice(0, 4);
+  if (missingSkills?.length) {
+    tips.push(`Add these missing skills to your resume: ${missingSkills.join(", ")}`);
+  }
+
+  // 4. Add missing keywords tip
+  const missingKeywords = ats?.scores?.keywordMatch?.missing?.slice(0, 4);
+  if (missingKeywords?.length) {
+    tips.push(`Include these JD keywords: ${missingKeywords.join(", ")}`);
+  }
+
+  // 5. GitHub tip if no GitHub found
+  if (!candidate.githubMetrics) {
+    tips.push("Add your GitHub profile URL to your resume to boost your composite score by 30%.");
+  }
+
+  // Deduplicate and return up to 6
+  return [...new Set(tips)].slice(0, 6);
+}
+
+// ══════════════════════════════════════════════════════════════
+// LinkedInInput — URL fetch first, fallback to manual paste
+// ══════════════════════════════════════════════════════════════
+function LinkedInInput({ index, linkedinText, onLinkedinChange }) {
+  const [show,        setShow]        = useState(false);
+  const [urlInput,    setUrlInput]    = useState("");
+  const [mode,        setMode]        = useState("url");   // "url" | "paste"
+  const [fetching,    setFetching]    = useState(false);
+  const [fetchStatus, setFetchStatus] = useState(null);    // null | "ok" | "blocked" | "error"
+  const [fetchMsg,    setFetchMsg]    = useState("");
+
+  const handleFetchUrl = async () => {
+    if (!urlInput.trim()) return;
+    setFetching(true);
+    setFetchStatus(null);
+    setFetchMsg("");
+
+    try {
+      const res  = await fetch(`${API_BASE}/linkedin-scrape`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ url: urlInput.trim() }),
+      });
+      const data = await res.json();
+
+      if (data.success && data.text) {
+        onLinkedinChange(index, data.text);
+        setFetchStatus("ok");
+        setFetchMsg(`✅ Loaded ${data.charCount} chars — ${data.name}`);
+      } else {
+        // LinkedIn blocked or profile private — switch to paste mode
+        setFetchStatus(data.blocked ? "blocked" : "error");
+        setFetchMsg(data.error || "Could not fetch profile.");
+        if (data.blocked) setMode("paste"); // auto-switch to paste
+      }
+    } catch (err) {
+      setFetchStatus("error");
+      setFetchMsg("Network error — please paste text manually.");
+      setMode("paste");
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  const hasText = linkedinText && linkedinText.trim().length > 50;
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      {/* Toggle button */}
+      <button onClick={() => setShow(!show)}
+        style={{
+          background: show || hasText ? "rgba(10,102,194,0.15)" : "rgba(255,255,255,0.03)",
+          border: `1px solid ${show || hasText ? "rgba(10,102,194,0.4)" : "rgba(255,255,255,0.08)"}`,
+          borderRadius: 8, padding: "6px 12px", cursor: "pointer",
+          color: show || hasText ? "#60a5fa" : "rgba(200,195,230,0.5)",
+          fontSize: 11, fontFamily: "'DM Sans',sans-serif", fontWeight: 600,
+          display: "flex", alignItems: "center", gap: 6, transition: "all 0.2s",
+        }}>
+        <span>💼</span>
+        {hasText ? `✅ LinkedIn added` : show ? "Hide LinkedIn" : "+ Add LinkedIn Profile"}
+      </button>
+
+      <AnimatePresence>
+        {show && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }} style={{ overflow: "hidden", marginTop: 8 }}>
+
+            {/* Mode tabs */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+              {[{ key: "url", label: "🔗 Paste URL" }, { key: "paste", label: "📋 Paste Text" }].map((m) => (
+                <button key={m.key} onClick={() => setMode(m.key)}
+                  style={{
+                    padding: "4px 12px", borderRadius: 6, cursor: "pointer", fontSize: 10,
+                    fontFamily: "'DM Mono',monospace", fontWeight: 600,
+                    background: mode === m.key ? "rgba(10,102,194,0.2)" : "rgba(255,255,255,0.03)",
+                    border: `1px solid ${mode === m.key ? "rgba(10,102,194,0.5)" : "rgba(255,255,255,0.08)"}`,
+                    color: mode === m.key ? "#60a5fa" : "rgba(200,195,230,0.4)",
+                    transition: "all 0.15s",
+                  }}>
+                  {m.label}
+                </button>
+              ))}
+            </div>
+
+            {mode === "url" ? (
+              <div>
+                {/* URL input + fetch button */}
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    type="text"
+                    value={urlInput}
+                    onChange={(e) => { setUrlInput(e.target.value); setFetchStatus(null); }}
+                    onKeyDown={(e) => e.key === "Enter" && !fetching && handleFetchUrl()}
+                    placeholder="https://www.linkedin.com/in/username"
+                    style={{
+                      flex: 1, borderRadius: 8, padding: "8px 10px",
+                      background: "rgba(10,102,194,0.06)",
+                      border: `1px solid ${fetchStatus === "ok" ? "rgba(34,197,94,0.4)" : fetchStatus === "error" || fetchStatus === "blocked" ? "rgba(248,113,113,0.4)" : "rgba(10,102,194,0.25)"}`,
+                      color: "#f1f0ff", fontSize: 11,
+                      fontFamily: "'DM Mono',monospace", outline: "none",
+                    }}
+                  />
+                  <motion.button
+                    whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                    onClick={handleFetchUrl}
+                    disabled={fetching || !urlInput.trim()}
+                    style={{
+                      padding: "8px 14px", borderRadius: 8, cursor: fetching ? "wait" : "pointer",
+                      background: fetching ? "rgba(99,102,241,0.1)" : "rgba(10,102,194,0.25)",
+                      border: "1px solid rgba(10,102,194,0.4)",
+                      color: "#60a5fa", fontSize: 11, fontFamily: "'DM Sans',sans-serif",
+                      fontWeight: 700, whiteSpace: "nowrap",
+                      opacity: !urlInput.trim() ? 0.4 : 1,
+                    }}>
+                    {fetching ? "⏳ Fetching..." : "Fetch →"}
+                  </motion.button>
+                </div>
+
+                {/* Status message */}
+                {fetchMsg && (
+                  <div style={{
+                    marginTop: 6, fontSize: 10, fontFamily: "'DM Sans',sans-serif", lineHeight: 1.5,
+                    color: fetchStatus === "ok" ? "#34d399" : "#f87171",
+                    padding: "6px 10px", borderRadius: 6,
+                    background: fetchStatus === "ok" ? "rgba(52,211,153,0.06)" : "rgba(248,113,113,0.06)",
+                    border: `1px solid ${fetchStatus === "ok" ? "rgba(52,211,153,0.2)" : "rgba(248,113,113,0.2)"}`,
+                  }}>
+                    {fetchMsg}
+                    {(fetchStatus === "blocked" || fetchStatus === "error") && (
+                      <span
+                        onClick={() => setMode("paste")}
+                        style={{ marginLeft: 8, cursor: "pointer", color: "#60a5fa", textDecoration: "underline" }}>
+                        Switch to paste mode →
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Help text */}
+                <div style={{ marginTop: 5, fontSize: 9, color: "rgba(200,195,230,0.3)", fontFamily: "'DM Mono',monospace" }}>
+                  Profile must be public. If fetch fails, use "Paste Text" tab.
+                </div>
+              </div>
+            ) : (
+              <div>
+                <textarea
+                  value={linkedinText}
+                  onChange={(e) => onLinkedinChange(index, e.target.value)}
+                  placeholder={`Paste LinkedIn profile text here...\n\nHow to get it:\n1. Open linkedin.com/in/username\n2. Select All (Ctrl+A) → Copy (Ctrl+C)\n3. Paste here`}
+                  style={{
+                    width: "100%", minHeight: 100, borderRadius: 10,
+                    padding: "10px 12px", boxSizing: "border-box",
+                    background: "rgba(10,102,194,0.06)",
+                    border: `1px solid ${linkedinText ? "rgba(10,102,194,0.45)" : "rgba(10,102,194,0.2)"}`,
+                    color: "#f1f0ff", fontSize: 11,
+                    fontFamily: "'DM Sans',sans-serif", lineHeight: 1.6,
+                    resize: "vertical", outline: "none",
+                  }}
+                />
+                {linkedinText && (
+                  <div style={{ marginTop: 4, fontSize: 9, color: "#34d399", fontFamily: "'DM Mono',monospace" }}>
+                    ✅ {linkedinText.trim().split(/\s+/).length} words captured
+                  </div>
+                )}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
 }
 
 // ══════════════════════════════════════════════════════════════
 // RESUME SLOT
 // ══════════════════════════════════════════════════════════════
 function ResumeSlot({ index, file, onAdd, onRemove, linkedinText, onLinkedinChange }) {
-  const inputRef                        = useRef(null);
-  const [dragging, setDragging]         = useState(false);
-  const [showLinkedin, setShowLinkedin] = useState(false);
+  const inputRef             = useRef(null);
+  const [dragging, setDragging] = useState(false);
   const slotColors = [
     { accent: "#60a5fa", glow: "#3b82f6" },
     { accent: "#a78bfa", glow: "#7c3aed" },
@@ -3405,31 +3624,11 @@ function ResumeSlot({ index, file, onAdd, onRemove, linkedinText, onLinkedinChan
                   background: "rgba(248,113,113,0.1)", color: "#f87171", fontSize: 11, cursor: "pointer",
                   display: "flex", alignItems: "center", justifyContent: "center" }}>✕</motion.button>
             </div>
-            <div style={{ marginTop: 10 }}>
-              <button onClick={() => setShowLinkedin(!showLinkedin)}
-                style={{ background: showLinkedin ? "rgba(10,102,194,0.15)" : "rgba(255,255,255,0.03)",
-                  border: `1px solid ${showLinkedin ? "rgba(10,102,194,0.4)" : "rgba(255,255,255,0.08)"}`,
-                  borderRadius: 8, padding: "6px 12px", cursor: "pointer",
-                  color: showLinkedin ? "#60a5fa" : "rgba(200,195,230,0.5)",
-                  fontSize: 11, fontFamily: "'DM Sans',sans-serif", fontWeight: 600,
-                  display: "flex", alignItems: "center", gap: 6, transition: "all 0.2s" }}>
-                <span>💼</span>{showLinkedin ? "Hide LinkedIn" : "+ Add LinkedIn Profile"}
-              </button>
-              <AnimatePresence>
-                {showLinkedin && (
-                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }} style={{ overflow: "hidden", marginTop: 8 }}>
-                    <textarea value={linkedinText} onChange={(e) => onLinkedinChange(index, e.target.value)}
-                      placeholder="Paste LinkedIn profile text here..."
-                      style={{ width: "100%", minHeight: 80, borderRadius: 10, padding: "10px 12px",
-                        boxSizing: "border-box", background: "rgba(10,102,194,0.06)",
-                        border: "1px solid rgba(10,102,194,0.25)", color: "#f1f0ff",
-                        fontSize: 11, fontFamily: "'DM Sans',sans-serif", lineHeight: 1.6,
-                        resize: "vertical", outline: "none" }} />
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
+            <LinkedInInput
+              index={index}
+              linkedinText={linkedinText}
+              onLinkedinChange={onLinkedinChange}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -3454,14 +3653,19 @@ function MetricBar({ label, score, delay = 0 }) {
   );
 }
 
-function ScorePill({ label, score, icon }) {
+function ScorePill({ label, score, icon, contribution }) {
   const color = scoreColor(score);
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 100,
+    <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 100,
       background: `${color}12`, border: `1px solid ${color}33` }}>
-      <span style={{ fontSize: 12 }}>{icon}</span>
-      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "rgba(200,195,230,0.6)" }}>{label}</span>
+      <span style={{ fontSize: 11 }}>{icon}</span>
+      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 9, color: "rgba(200,195,230,0.6)" }}>{label}</span>
       <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, fontWeight: 700, color }}>{score}</span>
+      {contribution !== undefined && (
+        <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 9, color: "rgba(200,195,230,0.4)" }}>
+          ={contribution}pts
+        </span>
+      )}
     </div>
   );
 }
@@ -3519,10 +3723,44 @@ function RankedCard({ candidate, rank, improvements }) {
           style={{ fontSize: 16, color: "rgba(200,195,230,0.4)", flexShrink: 0 }}>▼</motion.div>
       </div>
 
-      <div style={{ display: "flex", gap: 10, padding: "0 24px 16px", flexWrap: "wrap" }}>
-        <ScorePill label="ATS"      score={ats?.overallScore ?? 0}              icon="📋" />
-        {gh && <ScorePill label="GitHub"   score={gh.trustScore ?? 0}           icon="🐙" />}
-        {li && <ScorePill label="LinkedIn" score={li.overallLinkedInScore ?? 0} icon="💼" />}
+      {/* ── Score breakdown row: 50% ATS + 30% GitHub + 20% LinkedIn ── */}
+      <div style={{ padding: "0 24px 16px" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+          {/* ATS pill — 50% */}
+          <ScorePill label="ATS 50%" score={ats?.overallScore ?? 0} icon="📋"
+            contribution={Math.round((ats?.overallScore ?? 0) * 0.5)} />
+          {/* GitHub pill — 30% */}
+          {gh
+            ? <ScorePill label="GitHub 30%" score={gh.trustScore ?? 0} icon="🐙"
+                contribution={Math.round((gh.trustScore ?? 0) * 0.3)} />
+            : <span style={{ fontSize: 10, padding: "4px 10px", borderRadius: 100,
+                background: "rgba(248,113,113,0.08)", color: "#f87171",
+                border: "1px solid rgba(248,113,113,0.2)", fontFamily: "'DM Mono',monospace" }}>
+                🐙 GitHub 30% — {candidate.githubNote === "not_found" ? "⚠️ URL not valid" : "not provided"} = 0pts
+              </span>
+          }
+          {/* LinkedIn pill — 20% */}
+          {li
+            ? <ScorePill label="LinkedIn 20%" score={li.overallLinkedInScore ?? 0} icon="💼"
+                contribution={Math.round((li.overallLinkedInScore ?? 0) * 0.2)} />
+            : <span style={{ fontSize: 10, padding: "4px 10px", borderRadius: 100,
+                background: "rgba(245,158,11,0.07)", color: "#f59e0b",
+                border: "1px solid rgba(245,158,11,0.18)", fontFamily: "'DM Mono',monospace" }}>
+                💼 LinkedIn 20% — not provided = 0pts
+              </span>
+          }
+        </div>
+        {/* Composite breakdown bar */}
+        <div style={{ display: "flex", gap: 2, height: 6, borderRadius: 4, overflow: "hidden", background: "rgba(255,255,255,0.05)" }}>
+          <div style={{ width: `${(ats?.overallScore ?? 0) * 0.5}%`, background: "#60a5fa", transition: "width 0.8s ease" }} />
+          <div style={{ width: `${(gh?.trustScore ?? 0) * 0.3}%`, background: "#34d399", transition: "width 0.8s ease" }} />
+          <div style={{ width: `${(li?.overallLinkedInScore ?? 0) * 0.2}%`, background: "#a78bfa", transition: "width 0.8s ease" }} />
+        </div>
+        <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
+          <span style={{ fontSize: 9, color: "#60a5fa", fontFamily: "'DM Mono',monospace" }}>■ ATS {Math.round((ats?.overallScore ?? 0) * 0.5)}pts</span>
+          <span style={{ fontSize: 9, color: "#34d399", fontFamily: "'DM Mono',monospace" }}>■ GitHub {Math.round((gh?.trustScore ?? 0) * 0.3)}pts</span>
+          <span style={{ fontSize: 9, color: "#a78bfa", fontFamily: "'DM Mono',monospace" }}>■ LinkedIn {Math.round((li?.overallLinkedInScore ?? 0) * 0.2)}pts</span>
+        </div>
       </div>
 
       <AnimatePresence>
@@ -3779,46 +4017,40 @@ export default function ResumeRanker({ onBack }) {
 
       const analyzed = [];
       for (let i = 0; i < activeFiles.length; i++) {
-        setCurrentStep(`Analyzing resume ${i + 1} of ${activeFiles.length}: ${activeFiles[i].file.name}`);
-        setProgress(Math.round((i / activeFiles.length) * 60));
+        setCurrentStep(`🔍 Analyzing resume ${i + 1} of ${activeFiles.length}: ${activeFiles[i].file.name}`);
+        setProgress(Math.round((i / activeFiles.length) * 65));
         const data = await analyzeResume({ file: activeFiles[i].file, jdText: jd, linkedinText: activeFiles[i].linkedin, apiKey });
         analyzed.push(data);
-        // ── Rate-limit guard: pause between Groq calls ──────
+
+        // ── Rate-limit guard: 3s pause between Groq calls ───
+        // Groq free tier: ~6000 tokens/min. Each call uses ~2000 tokens.
+        // 3 calls/min = safe. For 5 resumes we need ~15s total spacing.
         if (i < activeFiles.length - 1) {
-          setCurrentStep(`Analyzed resume ${i + 1}/${activeFiles.length} — waiting before next...`);
-          await new Promise(r => setTimeout(r, 900));
+          setCurrentStep(`✅ Resume ${i + 1}/${activeFiles.length} analyzed — pausing 3s to respect Groq rate limits...`);
+          await new Promise(r => setTimeout(r, 3000));
         }
       }
 
-      setProgress(65);
-      setCurrentStep("Computing composite scores...");
+      setProgress(70);
+      setCurrentStep("⚡ Computing composite scores...");
       const ranked = [...analyzed].sort((a, b) => computeCompositeScore(b) - computeCompositeScore(a));
 
-      setProgress(75);
-      setCurrentStep("Generating personalized improvement plans...");
-      const improvements     = {};
-      const needsImprovement = ranked.slice(2);
-      for (let i = 0; i < needsImprovement.length; i++) {
-        const candidate = needsImprovement[i];
-        const rank      = i + 3;
-        setCurrentStep(`Creating improvement plan for #${rank}: ${candidate.atsResult?.candidateName || candidate.fileName}`);
-        setProgress(75 + Math.round((i / needsImprovement.length) * 15));
-        improvements[candidate.fileName] = await generateImprovements({ candidate, rank, jdText: jd, apiKey });
-        // ── Rate-limit guard: pause between improvement calls ──
-        if (i < needsImprovement.length - 1) {
-          await new Promise(r => setTimeout(r, 700));
-        }
+      setProgress(80);
+      setCurrentStep("🚀 Building improvement plans...");
+      const improvements = {};
+      // generateImprovements is now synchronous (no Groq call) — instant for all candidates
+      for (const candidate of ranked) {
+        improvements[candidate.fileName] = generateImprovements({ candidate });
       }
 
       setProgress(92);
-      setCurrentStep("Saving ranking to database...");
+      setCurrentStep("💾 Saving ranking to database...");
       await saveRankingToDb(ranked, improvements, jd);
 
       setProgress(100);
-      setCurrentStep("Done! Building leaderboard...");
+      setCurrentStep("🏆 Done! Building leaderboard...");
       await new Promise((r) => setTimeout(r, 600));
 
-      // ── FIXED: proper state update ────────────────────────
       setResults({ ranked, improvements });
       setAnalyzing(false);
 
@@ -4045,6 +4277,3 @@ export default function ResumeRanker({ onBack }) {
     </div>
   );
 }
-
-
-

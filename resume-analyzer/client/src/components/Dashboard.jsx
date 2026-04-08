@@ -1,44 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // import { useState } from "react";
 // import { useUser, UserButton } from "@clerk/clerk-react";
 // import { motion, AnimatePresence } from "framer-motion";
@@ -363,6 +322,7 @@
 // import GitHubExport from "./GitHubExport";
 // import LinkedInAnalyzer from "./LinkedInAnalyzer";
 // import ResumeRanker from "./ResumeRanker";
+import ATSBuilder from "./ATSBuilder";
 // import { useGitHub } from "../hooks/useGitHub";
 
 // export default function Dashboard() {
@@ -1122,6 +1082,7 @@ export default function Dashboard() {
     { label: "🏆 Ranker",   key: "ranker"   },
     { label: "💼 LinkedIn", key: "linkedin" },
     { label: "📜 History",  key: "history"  },
+    { label: "🎯 ATS Builder", key: "atsbuilder" },
     { label: "💾 GitHub",   key: "github", onClick: () => setGithubModalOpen(true) },
   ];
 
@@ -1172,6 +1133,7 @@ export default function Dashboard() {
                 { icon: "🏆", title: "Resume Ranker",     sub: "Compare & rank up to 5 resumes",  color: "250,204,21",  onClick: () => setView("ranker")   },
                 { icon: "💼", title: "LinkedIn Analyzer", sub: "12 professional metrics",         color: "14,165,233",  onClick: () => setView("linkedin") },
                 { icon: "📜", title: "View History",      sub: "See all analyzed resumes",        color: "96,165,250",  onClick: () => setView("history")  },
+                { icon: "🎯", title: "ATS Builder",       sub: "Build JD-matched ATS resume",     color: "5,150,105",   onClick: () => setView("atsbuilder") },
               ].map((card, i) => (
                 <motion.div key={i} whileHover={{ y: -6, boxShadow: `0 20px 60px rgba(${card.color},0.3)` }} onClick={card.onClick}
                   style={{ padding: "28px 32px", borderRadius: 20, cursor: "pointer", background: `rgba(${card.color},0.08)`, border: `1px solid rgba(${card.color},0.3)`, backdropFilter: "blur(16px)", textAlign: "center", minWidth: 180, transition: "box-shadow 0.3s" }}>
@@ -1200,6 +1162,7 @@ export default function Dashboard() {
         {view === "ranker" && (<motion.div key="ranker" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ paddingTop: 70 }}><ResumeRanker onBack={() => setView("home")} /></motion.div>)}
         {view === "linkedin" && (<motion.div key="linkedin" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ paddingTop: 0 }}><LinkedInAnalyzer onBack={() => setView("home")} resumeScore={reportData?.overallScore ?? null} resumeSkills={reportData?.scores?.skillsMatch?.matched || []} /></motion.div>)}
         {view === "report" && reportData && (<motion.div key="report" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ paddingTop: 70 }}><AnalysisReport data={reportData} fileName={resumeFileName} onBack={() => setView("home")} /></motion.div>)}
+        {view === "atsbuilder" && (<motion.div key="atsbuilder" initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }} style={{ paddingTop:70 }}><ATSBuilder onBack={() => setView("home")} /></motion.div>)}
         {view === "history" && (<motion.div key="history" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ paddingTop: 70 }}><HistoryPage onBack={() => setView("home")} /></motion.div>)}
       </AnimatePresence>
 
@@ -1207,4 +1170,11 @@ export default function Dashboard() {
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=DM+Sans:wght@400;500&family=DM+Mono:wght@400;500&display=swap');`}</style>
     </div>
   );
-}
+}   
+
+
+
+
+
+
+

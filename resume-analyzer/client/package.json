@@ -1,32 +1,24 @@
 {
-  "name": "resume-analyzer-server",
+  "name": "resume-analyzer-client",
+  "private": true,
   "version": "1.0.0",
-  "description": "ResumeAI backend",
-  "main": "server_index.js",
+  "type": "module",
   "scripts": {
-    "start": "node server_index.js",
-    "dev": "nodemon server_index.js"
+    "dev": "vite",
+    "start": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
-    "@octokit/rest": "^20.0.2",
-    "@sparticuz/chromium": "^123.0.1",
-    "axios": "^1.14.0",
-    "cheerio": "^1.2.0",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "mongoose": "^8.0.3",
-    "multer": "^1.4.5-lts.1",
+    "@clerk/clerk-react": "^5.61.4",
+    "@octokit/rest": "^22.0.1",
+    "axios": "^1.6.0",
     "pdfjs-dist": "^5.6.205",
-    "pdfkit": "^0.18.0",
-    "puppeteer-core": "^24.40.0",
-    "uuid": "^9.0.0"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "@vitejs/plugin-react": "^4.7.0",
+    "vite": "^5.0.0"
   }
 }
-
-
-
-

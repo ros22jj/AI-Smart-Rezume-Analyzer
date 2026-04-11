@@ -3211,6 +3211,7 @@ async function groqFetchWithRetry(body, apiKey, retries = 4) {
     } catch (netErr) {
       throw new Error(`Network error: ${netErr.message}`);
     }
+    
     if (res.ok) return res;
     if (res.status === 429) {
       // Respect Retry-After header if present, else exponential backoff

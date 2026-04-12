@@ -12,6 +12,7 @@ const router     = express.Router();
 const { v4: uuidv4 } = require("uuid");
 const PDFDocument = require("pdfkit");
 const MentorChat  = require("../models/MentorChat");
+const fetch = require("node-fetch");
 
 // ── Groq helper with retry + model fallback ──────────────────
 async function callGroq({ apiKey, messages, systemPrompt, maxTokens = 1000 }) {
